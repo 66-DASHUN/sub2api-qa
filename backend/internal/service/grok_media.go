@@ -772,10 +772,6 @@ func NormalizeGrokMediaModelForEndpoint(endpoint GrokMediaEndpoint, model string
 		if model == "grok-imagine" {
 			return "grok-imagine-image-quality"
 		}
-	case GrokMediaEndpointVideosGenerations:
-		if model == "grok-imagine-video-1.5" && !hasInputImage {
-			return "grok-imagine-video"
-		}
 	}
 	return model
 }

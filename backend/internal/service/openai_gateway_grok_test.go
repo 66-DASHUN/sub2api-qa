@@ -870,7 +870,7 @@ func TestNormalizeGrokMediaModelForEndpoint(t *testing.T) {
 		{name: "image quality passthrough", endpoint: GrokMediaEndpointImagesGenerations, model: "grok-imagine-image-quality", want: "grok-imagine-image-quality"},
 		{name: "image fast passthrough", endpoint: GrokMediaEndpointImagesGenerations, model: "grok-imagine-image", want: "grok-imagine-image"},
 		{name: "video passthrough", endpoint: GrokMediaEndpointVideosGenerations, model: "grok-imagine-video", want: "grok-imagine-video"},
-		{name: "video 1.5 text-only fallback", endpoint: GrokMediaEndpointVideosGenerations, model: "grok-imagine-video-1.5", want: "grok-imagine-video"},
+		{name: "video 1.5 text-to-video passthrough", endpoint: GrokMediaEndpointVideosGenerations, model: "grok-imagine-video-1.5", want: "grok-imagine-video-1.5"},
 		{name: "video 1.5 image-to-video passthrough", endpoint: GrokMediaEndpointVideosGenerations, model: "grok-imagine-video-1.5", hasInputImage: true, want: "grok-imagine-video-1.5"},
 	}
 
@@ -957,14 +957,14 @@ func TestForwardGrokMediaAppliesAccountModelMappingAfterEndpointNormalization(t 
 			responseBody:     `{"data":[{"url":"https://images.test/mapped.png"}]}`,
 		},
 		{
-			name:             "video generation maps text-only fallback model",
+			name:             "video generation maps preserved text-to-video model",
 			endpoint:         GrokMediaEndpointVideosGenerations,
 			path:             "/v1/videos/generations",
 			body:             `{"model":"grok-imagine-video-1.5","prompt":"waves"}`,
-			modelMapping:     map[string]any{"grok-imagine-video": "grok-image-video"},
-			wantRequestModel: "grok-imagine-video",
-			wantUpstream:     "grok-image-video",
-			wantBody:         `{"model":"grok-image-video","prompt":"waves"}`,
+			modelMapping:     map[string]any{"grok-imagine-video-1.5": "vendor-video-1.5"},
+			wantRequestModel: "grok-imagine-video-1.5",
+			wantUpstream:     "vendor-video-1.5",
+			wantBody:         `{"model":"vendor-video-1.5","prompt":"waves"}`,
 			responseBody:     `{"request_id":"video-request-mapped"}`,
 		},
 		{
@@ -1176,7 +1176,7 @@ func TestForwardGrokMediaVideoGenerationReturnsUsageAndResponseID(t *testing.T) 
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	body := []byte(`{"model":"grok-imagine-video-1.5","prompt":"waves","resolution":"720p","duration":10}`)
+	body := []byte(`{"model":"grok-imagine-video-1.5","prompt":"waves","resolution":"1080p","duration":5}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -1204,16 +1204,16 @@ func TestForwardGrokMediaVideoGenerationReturnsUsageAndResponseID(t *testing.T) 
 	result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideosGenerations, "", body, "application/json")
 	require.NoError(t, err)
 	require.Equal(t, "https://xai.test/v1/videos/generations", upstream.lastReq.URL.String())
-	require.JSONEq(t, `{"model":"grok-imagine-video","prompt":"waves","resolution":"720p","duration":10}`, string(upstream.lastBody))
+	require.JSONEq(t, `{"model":"grok-imagine-video-1.5","prompt":"waves","resolution":"1080p","duration":5}`, string(upstream.lastBody))
 	require.Equal(t, "video-request-123", result.ResponseID)
-	require.Equal(t, "grok-imagine-video", result.BillingModel)
+	require.Equal(t, "grok-imagine-video-1.5", result.BillingModel)
 	require.Equal(t, 3, result.Usage.InputTokens)
 	require.Equal(t, 4, result.Usage.OutputTokens)
 	require.Equal(t, 1, result.ImageCount)
 	require.Empty(t, result.ImageSize)
 	require.Equal(t, 1, result.VideoCount)
-	require.Equal(t, VideoBillingResolution720P, result.VideoResolution)
-	require.Equal(t, 10, result.VideoDurationSeconds)
+	require.Equal(t, VideoBillingResolution1080P, result.VideoResolution)
+	require.Equal(t, 5, result.VideoDurationSeconds)
 }
 
 func TestForwardGrokMediaVideoGenerationPreservesImageToVideoModel(t *testing.T) {
