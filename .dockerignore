@@ -80,3 +80,17 @@ deploy/redis_data/
 .claude/
 issues/
 CLAUDE.md
+
+# QA downstream: never send local runtime state or credentials to BuildKit
+data/
+backups/
+postgres_data/
+redis_data/
+**/data/
+**/backups/
+**/postgres_data/
+**/redis_data/
+*.pem
+*.p12
+*.pfx
+*.key
