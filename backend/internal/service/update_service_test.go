@@ -31,13 +31,36 @@ type updateServiceGitHubClientStub struct {
 	release        *GitHubRelease
 	recentReleases []*GitHubRelease
 	recentErr      error
+	latestCalls    int
+	recentCalls    int
+	recentRepo     string
+}
+
+type containerUpdateClientStub struct {
+	staged     []string
+	stageErr   error
+	applyErr   error
+	applyCalls int
+}
+
+func (s *containerUpdateClientStub) Stage(_ context.Context, version string) error {
+	s.staged = append(s.staged, version)
+	return s.stageErr
+}
+
+func (s *containerUpdateClientStub) Apply(context.Context) error {
+	s.applyCalls++
+	return s.applyErr
 }
 
 func (s *updateServiceGitHubClientStub) FetchLatestRelease(context.Context, string) (*GitHubRelease, error) {
+	s.latestCalls++
 	return s.release, nil
 }
 
-func (s *updateServiceGitHubClientStub) FetchRecentReleases(context.Context, string, int) ([]*GitHubRelease, error) {
+func (s *updateServiceGitHubClientStub) FetchRecentReleases(_ context.Context, repo string, _ int) ([]*GitHubRelease, error) {
+	s.recentCalls++
+	s.recentRepo = repo
 	return s.recentReleases, s.recentErr
 }
 
@@ -72,6 +95,100 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 func TestUpdateInfoHasContainerMode(t *testing.T) {
 	info := &UpdateInfo{UpdateMode: "container"}
 	require.Equal(t, "container", info.UpdateMode)
+}
+
+func newContainerUpdateTestService(current string, releases []*GitHubRelease) *UpdateService {
+	return newContainerUpdateTestServiceWithHelper(current, &containerUpdateClientStub{}, releases)
+}
+
+func newContainerUpdateTestServiceWithHelper(current string, helper ContainerUpdateClient, releases []*GitHubRelease) *UpdateService {
+	return NewUpdateService(
+		&updateServiceCacheStub{},
+		&updateServiceGitHubClientStub{recentReleases: releases},
+		current,
+		"release",
+		UpdateServiceOptions{
+			Mode:             UpdateModeContainer,
+			ReleaseRepo:      "66-DASHUN/sub2api-qa",
+			ReleaseTagPrefix: "qa-v",
+			ContainerClient:  helper,
+		},
+	)
+}
+
+func TestContainerUpdateInfoFiltersQAReleases(t *testing.T) {
+	releases := []*GitHubRelease{
+		{TagName: "v0.1.199", Name: "official"},
+		{TagName: "QA", Name: "mutable"},
+		{TagName: "qa-v0.1.172", Name: "QA 0.1.172"},
+		{TagName: "qa-v0.1.171", Name: "current"},
+		{TagName: "qa-v0.1.173-rc1", Prerelease: true},
+		{TagName: "qa-v0.1.170", Draft: true},
+	}
+	svc := newContainerUpdateTestService("0.1.171", releases)
+	info, err := svc.CheckUpdate(context.Background(), true)
+	require.NoError(t, err)
+	require.Equal(t, UpdateModeContainer, info.UpdateMode)
+	require.Equal(t, "66-DASHUN/sub2api-qa", info.UpdateSource)
+	require.Equal(t, "0.1.172", info.LatestVersion)
+	require.True(t, info.HasUpdate)
+	require.NotNil(t, info.ReleaseInfo)
+	require.Equal(t, "qa-v0.1.172", info.ReleaseInfo.TagName)
+}
+
+func TestContainerPerformUpdateStagesOnlyNormalizedVersion(t *testing.T) {
+	helper := &containerUpdateClientStub{}
+	svc := newContainerUpdateTestServiceWithHelper("0.1.171", helper, []*GitHubRelease{{TagName: "qa-v0.1.172"}})
+	require.NoError(t, svc.PerformUpdate(context.Background()))
+	require.Equal(t, []string{"0.1.172"}, helper.staged)
+}
+
+func TestContainerRestartDelegatesApply(t *testing.T) {
+	helper := &containerUpdateClientStub{}
+	svc := newContainerUpdateTestServiceWithHelper("0.1.171", helper, nil)
+	handled, err := svc.Restart(context.Background())
+	require.True(t, handled)
+	require.NoError(t, err)
+	require.Equal(t, 1, helper.applyCalls)
+}
+
+func TestContainerRestartSurfacesNoStagedUpdate(t *testing.T) {
+	helper := &containerUpdateClientStub{applyErr: ErrNoStagedContainerUpdate}
+	svc := newContainerUpdateTestServiceWithHelper("0.1.171", helper, nil)
+	handled, err := svc.Restart(context.Background())
+	require.True(t, handled)
+	require.ErrorIs(t, err, ErrNoStagedContainerUpdate)
+}
+
+func TestContainerCacheDoesNotReuseBinaryRelease(t *testing.T) {
+	cache := &updateServiceCacheStub{}
+	binary := NewUpdateService(
+		cache,
+		&updateServiceGitHubClientStub{release: &GitHubRelease{TagName: "v0.1.180"}},
+		"0.1.171",
+		"release",
+	)
+	_, err := binary.CheckUpdate(context.Background(), true)
+	require.NoError(t, err)
+
+	github := &updateServiceGitHubClientStub{recentReleases: []*GitHubRelease{{TagName: "qa-v0.1.172"}}}
+	container := NewUpdateService(
+		cache,
+		github,
+		"0.1.171",
+		"release",
+		UpdateServiceOptions{
+			Mode:             UpdateModeContainer,
+			ReleaseRepo:      "66-DASHUN/sub2api-qa",
+			ReleaseTagPrefix: "qa-v",
+			ContainerClient:  &containerUpdateClientStub{},
+		},
+	)
+	info, err := container.CheckUpdate(context.Background(), false)
+	require.NoError(t, err)
+	require.Equal(t, "0.1.172", info.LatestVersion)
+	require.Equal(t, 1, github.recentCalls)
+	require.Equal(t, "66-DASHUN/sub2api-qa", github.recentRepo)
 }
 
 func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateService {

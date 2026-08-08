@@ -23,14 +23,20 @@ import (
 )
 
 var (
-	ErrNoUpdateAvailable         = infraerrors.Conflict("ALREADY_UP_TO_DATE", "no update available; current version is latest")
-	ErrRollbackVersionNotAllowed = infraerrors.BadRequest("ROLLBACK_VERSION_NOT_ALLOWED", "version is not in the allowed rollback list")
+	ErrNoUpdateAvailable            = infraerrors.Conflict("ALREADY_UP_TO_DATE", "no update available; current version is latest")
+	ErrRollbackVersionNotAllowed    = infraerrors.BadRequest("ROLLBACK_VERSION_NOT_ALLOWED", "version is not in the allowed rollback list")
+	ErrContainerUpdateUnavailable   = infraerrors.ServiceUnavailable("CONTAINER_UPDATE_UNAVAILABLE", "container update helper is not configured")
+	ErrNoStagedContainerUpdate      = infraerrors.Conflict("NO_STAGED_CONTAINER_UPDATE", "no staged container update is available")
+	ErrContainerRollbackUnsupported = infraerrors.BadRequest("CONTAINER_ROLLBACK_UNSUPPORTED", "local binary rollback is not available in container mode")
 )
 
 const (
-	updateCacheKey = "update_check_cache"
-	updateCacheTTL = 1200 // 20 minutes
-	githubRepo     = "Wei-Shaw/sub2api"
+	updateCacheKey         = "update_check_cache"
+	updateCacheTTL         = 1200 // 20 minutes
+	githubRepo             = "Wei-Shaw/sub2api"
+	containerFetchPageSize = 30
+	UpdateModeBinary       = "binary"
+	UpdateModeContainer    = "container"
 
 	// Security: allowed download domains for updates
 	allowedDownloadHost = "github.com"
@@ -59,21 +65,59 @@ type GitHubReleaseClient interface {
 	FetchChecksumFile(ctx context.Context, url string) ([]byte, error)
 }
 
-// UpdateService handles software updates
+// ContainerUpdateClient stages and applies immutable container images.
+type ContainerUpdateClient interface {
+	Stage(ctx context.Context, version string) error
+	Apply(ctx context.Context) error
+}
+
+// UpdateServiceOptions configures the update artifact and release source.
+type UpdateServiceOptions struct {
+	Mode             string
+	ReleaseRepo      string
+	ReleaseTagPrefix string
+	ContainerClient  ContainerUpdateClient
+}
+
+// UpdateService handles software updates.
 type UpdateService struct {
 	cache          UpdateCache
 	githubClient   GitHubReleaseClient
 	currentVersion string
 	buildType      string // "source" for manual builds, "release" for CI builds
+	updateMode     string
+	releaseRepo    string
+	releasePrefix  string
+	container      ContainerUpdateClient
 }
 
-// NewUpdateService creates a new UpdateService
-func NewUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, version, buildType string) *UpdateService {
+// NewUpdateService creates a new UpdateService.
+func NewUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, version, buildType string, options ...UpdateServiceOptions) *UpdateService {
+	var opts UpdateServiceOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	mode := strings.TrimSpace(opts.Mode)
+	if mode != UpdateModeContainer {
+		mode = UpdateModeBinary
+	}
+	repo := strings.TrimSpace(opts.ReleaseRepo)
+	if repo == "" {
+		repo = githubRepo
+	}
+	prefix := opts.ReleaseTagPrefix
+	if prefix == "" {
+		prefix = "v"
+	}
 	return &UpdateService{
 		cache:          cache,
 		githubClient:   githubClient,
 		currentVersion: version,
 		buildType:      buildType,
+		updateMode:     mode,
+		releaseRepo:    repo,
+		releasePrefix:  prefix,
+		container:      opts.ContainerClient,
 	}
 }
 
@@ -155,6 +199,8 @@ func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInf
 			HasUpdate:      false,
 			Warning:        err.Error(),
 			BuildType:      s.buildType,
+			UpdateMode:     s.updateMode,
+			UpdateSource:   s.releaseRepo,
 		}, nil
 	}
 
@@ -170,11 +216,29 @@ func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
 	if !info.HasUpdate {
 		return ErrNoUpdateAvailable
 	}
-
+	if s.isContainerMode() {
+		client, err := s.containerClient()
+		if err != nil {
+			return err
+		}
+		version, ok := "", false
+		if info.ReleaseInfo != nil {
+			version, ok = s.releaseVersion(info.ReleaseInfo.TagName)
+		}
+		if !ok {
+			version, ok = normalizeVersion(info.LatestVersion)
+		}
+		if !ok {
+			return fmt.Errorf("latest QA release has invalid version %q", info.LatestVersion)
+		}
+		return client.Stage(ctx, version)
+	}
+	if info.ReleaseInfo == nil {
+		return fmt.Errorf("latest release has no release information")
+	}
 	return s.applyReleaseAssets(ctx, info.ReleaseInfo.Assets)
 }
 
@@ -284,6 +348,9 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 
 // Rollback restores the previous version
 func (s *UpdateService) Rollback() error {
+	if s.isContainerMode() {
+		return ErrContainerRollbackUnsupported
+	}
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %w", err)
@@ -317,8 +384,12 @@ func (s *UpdateService) ListRollbackVersions(ctx context.Context) ([]RollbackVer
 
 	versions := make([]RollbackVersion, 0, len(releases))
 	for _, r := range releases {
+		version, ok := s.releaseVersionForTag(r.TagName)
+		if !ok {
+			continue
+		}
 		versions = append(versions, RollbackVersion{
-			Version:     strings.TrimPrefix(r.TagName, "v"),
+			Version:     version,
 			PublishedAt: r.PublishedAt,
 			HTMLURL:     r.HTMLURL,
 		})
@@ -342,13 +413,21 @@ func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) e
 
 	var match *GitHubRelease
 	for _, r := range releases {
-		if strings.TrimPrefix(r.TagName, "v") == target {
+		candidate, ok := s.releaseVersionForTag(r.TagName)
+		if ok && candidate == target {
 			match = r
 			break
 		}
 	}
 	if match == nil {
 		return ErrRollbackVersionNotAllowed
+	}
+	if s.isContainerMode() {
+		client, err := s.containerClient()
+		if err != nil {
+			return err
+		}
+		return client.Stage(ctx, target)
 	}
 
 	assets := make([]Asset, len(match.Assets))
@@ -366,7 +445,7 @@ func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) e
 // fetchRollbackCandidates fetches recent releases and keeps the newest
 // maxRollbackVersions entries strictly older than the current version.
 func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubRelease, error) {
-	releases, err := s.githubClient.FetchRecentReleases(ctx, githubRepo, rollbackFetchPageSize)
+	releases, err := s.githubClient.FetchRecentReleases(ctx, s.releaseRepo, rollbackFetchPageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -377,8 +456,8 @@ func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubR
 		if r == nil || r.Draft || r.Prerelease {
 			continue
 		}
-		v := strings.TrimPrefix(r.TagName, "v")
-		if v == "" || seen[v] {
+		v, ok := s.releaseVersionForTag(r.TagName)
+		if !ok || seen[v] {
 			continue
 		}
 		// Only versions strictly older than current (also excludes current itself)
@@ -390,10 +469,9 @@ func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubR
 	}
 
 	sort.SliceStable(candidates, func(i, j int) bool {
-		return compareVersions(
-			strings.TrimPrefix(candidates[i].TagName, "v"),
-			strings.TrimPrefix(candidates[j].TagName, "v"),
-		) > 0
+		left, _ := s.releaseVersionForTag(candidates[i].TagName)
+		right, _ := s.releaseVersionForTag(candidates[j].TagName)
+		return compareVersions(left, right) > 0
 	})
 
 	if len(candidates) > maxRollbackVersions {
@@ -403,36 +481,112 @@ func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubR
 }
 
 func (s *UpdateService) fetchLatestRelease(ctx context.Context) (*UpdateInfo, error) {
-	release, err := s.githubClient.FetchLatestRelease(ctx, githubRepo)
+	if s.isContainerMode() {
+		return s.fetchLatestContainerRelease(ctx)
+	}
+	release, err := s.githubClient.FetchLatestRelease(ctx, s.releaseRepo)
 	if err != nil {
 		return nil, err
 	}
-
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	return s.buildUpdateInfo(release, latestVersion), nil
+}
 
+func (s *UpdateService) fetchLatestContainerRelease(ctx context.Context) (*UpdateInfo, error) {
+	releases, err := s.githubClient.FetchRecentReleases(ctx, s.releaseRepo, containerFetchPageSize)
+	if err != nil {
+		return nil, err
+	}
+	var selected *GitHubRelease
+	selectedVersion := ""
+	for _, release := range releases {
+		if release == nil || release.Draft || release.Prerelease {
+			continue
+		}
+		version, ok := s.releaseVersionForTag(release.TagName)
+		if !ok || (selected != nil && compareVersions(version, selectedVersion) <= 0) {
+			continue
+		}
+		selected = release
+		selectedVersion = version
+	}
+	if selected == nil {
+		return nil, fmt.Errorf("no valid %s release found in %s", s.releasePrefix, s.releaseRepo)
+	}
+	return s.buildUpdateInfo(selected, selectedVersion), nil
+}
+
+func (s *UpdateService) buildUpdateInfo(release *GitHubRelease, latestVersion string) *UpdateInfo {
 	assets := make([]Asset, len(release.Assets))
 	for i, a := range release.Assets {
-		assets[i] = Asset{
-			Name:        a.Name,
-			DownloadURL: a.BrowserDownloadURL,
-			Size:        a.Size,
-		}
+		assets[i] = Asset{Name: a.Name, DownloadURL: a.BrowserDownloadURL, Size: a.Size}
 	}
-
 	return &UpdateInfo{
 		CurrentVersion: s.currentVersion,
 		LatestVersion:  latestVersion,
 		HasUpdate:      compareVersions(s.currentVersion, latestVersion) < 0,
 		ReleaseInfo: &ReleaseInfo{
-			Name:        release.Name,
-			Body:        release.Body,
-			PublishedAt: release.PublishedAt,
-			HTMLURL:     release.HTMLURL,
-			Assets:      assets,
+			TagName: release.TagName, Name: release.Name, Body: release.Body,
+			PublishedAt: release.PublishedAt, HTMLURL: release.HTMLURL, Assets: assets,
 		},
-		Cached:    false,
-		BuildType: s.buildType,
-	}, nil
+		Cached: false, BuildType: s.buildType,
+		UpdateMode: s.updateMode, UpdateSource: s.releaseRepo,
+	}
+}
+
+func (s *UpdateService) Restart(ctx context.Context) (bool, error) {
+	if !s.isContainerMode() {
+		return false, nil
+	}
+	client, err := s.containerClient()
+	if err != nil {
+		return true, err
+	}
+	return true, client.Apply(ctx)
+}
+
+func (s *UpdateService) isContainerMode() bool {
+	return s.updateMode == UpdateModeContainer
+}
+
+func (s *UpdateService) containerClient() (ContainerUpdateClient, error) {
+	if s.container == nil {
+		return nil, ErrContainerUpdateUnavailable
+	}
+	return s.container, nil
+}
+
+func (s *UpdateService) releaseVersion(tag string) (string, bool) {
+	if s.isContainerMode() {
+		return s.releaseVersionForTag(tag)
+	}
+	return normalizeVersion(strings.TrimPrefix(tag, "v"))
+}
+
+func (s *UpdateService) releaseVersionForTag(tag string) (string, bool) {
+	if s.releasePrefix == "" || !strings.HasPrefix(tag, s.releasePrefix) {
+		return "", false
+	}
+	return normalizeVersion(strings.TrimPrefix(tag, s.releasePrefix))
+}
+
+func normalizeVersion(version string) (string, bool) {
+	version = strings.TrimSpace(strings.TrimPrefix(version, "v"))
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return "", false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return "", false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return "", false
+			}
+		}
+	}
+	return version, true
 }
 
 func (s *UpdateService) downloadFile(ctx context.Context, downloadURL, dest string) error {
@@ -606,6 +760,8 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 		Latest      string       `json:"latest"`
 		ReleaseInfo *ReleaseInfo `json:"release_info"`
 		Timestamp   int64        `json:"timestamp"`
+		Mode        string       `json:"mode"`
+		Source      string       `json:"source"`
 	}
 	if err := json.Unmarshal([]byte(data), &cached); err != nil {
 		return nil, err
@@ -613,6 +769,12 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 
 	if time.Now().Unix()-cached.Timestamp > updateCacheTTL {
 		return nil, fmt.Errorf("cache expired")
+	}
+	if cached.Mode != "" && cached.Mode != s.updateMode {
+		return nil, fmt.Errorf("update cache mode mismatch")
+	}
+	if cached.Source != "" && cached.Source != s.cacheSource() {
+		return nil, fmt.Errorf("update cache source mismatch")
 	}
 
 	return &UpdateInfo{
@@ -622,7 +784,13 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 		ReleaseInfo:    cached.ReleaseInfo,
 		Cached:         true,
 		BuildType:      s.buildType,
+		UpdateMode:     s.updateMode,
+		UpdateSource:   s.releaseRepo,
 	}, nil
+}
+
+func (s *UpdateService) cacheSource() string {
+	return s.releaseRepo + "|" + s.releasePrefix
 }
 
 func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
@@ -630,10 +798,14 @@ func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
 		Latest      string       `json:"latest"`
 		ReleaseInfo *ReleaseInfo `json:"release_info"`
 		Timestamp   int64        `json:"timestamp"`
+		Mode        string       `json:"mode"`
+		Source      string       `json:"source"`
 	}{
 		Latest:      info.LatestVersion,
 		ReleaseInfo: info.ReleaseInfo,
 		Timestamp:   time.Now().Unix(),
+		Mode:        s.updateMode,
+		Source:      s.cacheSource(),
 	}
 
 	data, _ := json.Marshal(cacheData)
