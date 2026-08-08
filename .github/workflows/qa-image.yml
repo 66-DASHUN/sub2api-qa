@@ -2,33 +2,64 @@ name: QA Container Image
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - qa/grok-video-1080p
+    inputs:
+      version:
+        description: Official release version to publish, for example 0.1.171
+        required: true
+        default: "0.1.171"
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: qa-container-${{ github.ref }}
-  cancel-in-progress: true
+  group: qa-container-${{ inputs.version || '0.1.171' }}
+  cancel-in-progress: false
+
+env:
+  QA_VERSION: ${{ inputs.version || '0.1.171' }}
+  QA_REPOSITORY: ghcr.io/66-dashun/sub2api
+  QA_SOURCE: https://github.com/66-DASHUN/sub2api-qa
+  OFFICIAL_REPOSITORY: https://github.com/Wei-Shaw/sub2api.git
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
           check-latest: false
           cache: true
           cache-dependency-path: backend/go.sum
-      - name: Verify Go version
-        run: go version | grep -q 'go1.26.5'
+      - name: Verify version and official ancestor
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${QA_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --no-tags "${OFFICIAL_REPOSITORY}" "refs/tags/v${QA_VERSION}:refs/tags/v${QA_VERSION}"
+          git cat-file -e "refs/tags/v${QA_VERSION}^{commit}"
+          git merge-base --is-ancestor "refs/tags/v${QA_VERSION}" "${GITHUB_SHA}"
       - name: Unit tests
         working-directory: backend
         run: go test -tags=unit ./... -count=1
+      - name: Helper build
+        working-directory: backend
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: go build -trimpath -o sub2api-image-updater ./cmd/image-updater
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sub2api-image-updater-linux-amd64
+          path: backend/sub2api-image-updater
+          if-no-files-found: error
+          retention-days: 7
 
   build:
     needs: test
@@ -38,23 +69,124 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate immutable version state
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="qa-v${QA_VERSION}"
+          image="${QA_REPOSITORY}:${QA_VERSION}"
+          remote_tag="$(git ls-remote --tags origin "refs/tags/${tag}" | cut -f1)"
+          if [ -n "${remote_tag}" ] && [ "${remote_tag}" != "${GITHUB_SHA}" ]; then
+            echo "Release tag ${tag} belongs to ${remote_tag}, not ${GITHUB_SHA}." >&2
+            exit 1
+          fi
+          if [ -n "${remote_tag}" ]; then
+            echo "release_tag_exists=true" >>"${GITHUB_OUTPUT}"
+          else
+            echo "release_tag_exists=false" >>"${GITHUB_OUTPUT}"
+          fi
+
+          set +e
+          inspect_output="$(docker manifest inspect "${image}" 2>&1)"
+          inspect_status=$?
+          set -e
+          if [ "${inspect_status}" -eq 0 ]; then
+            docker pull "${image}" >/dev/null
+            actual_version="$(docker image inspect "${image}" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
+            actual_source="$(docker image inspect "${image}" --format '{{index .Config.Labels "org.opencontainers.image.source"}}')"
+            actual_revision="$(docker image inspect "${image}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+            if [ "${actual_version}" != "${QA_VERSION}" ] || [ "${actual_source}" != "${QA_SOURCE}" ] || [ "${actual_revision}" != "${GITHUB_SHA}" ]; then
+              echo "Image ${image} exists with different immutable metadata." >&2
+              exit 1
+            fi
+            echo "image_exists=true" >>"${GITHUB_OUTPUT}"
+          elif grep -Eqi 'manifest unknown|not found' <<<"${inspect_output}"; then
+            echo "image_exists=false" >>"${GITHUB_OUTPUT}"
+          else
+            echo "Unable to prove ${image} is unused; refusing to publish." >&2
+            exit 1
+          fi
       - uses: docker/build-push-action@v6
+        if: steps.preflight.outputs.image_exists != 'true'
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          tags: |
-            ghcr.io/66-dashun/sub2api:QA
-            ghcr.io/66-dashun/sub2api:qa-v0.1.171-${{ github.sha }}
+          tags: ghcr.io/66-dashun/sub2api:${{ env.QA_VERSION }}
           build-args: |
-            VERSION=0.1.171-qa
+            VERSION=${{ env.QA_VERSION }}
             COMMIT=${{ github.sha }}
+            DATE=${{ github.run_started_at }}
+            SOURCE_REPOSITORY=${{ env.QA_SOURCE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Verify immutable image labels
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${QA_REPOSITORY}:${QA_VERSION}"
+          docker pull "$image" >/dev/null
+          docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.version"}}' | grep -Fx "${QA_VERSION}"
+          docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.source"}}' | grep -Fx "${QA_SOURCE}"
+          docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' | grep -Fx "${GITHUB_SHA}"
+          docker image inspect "$image" --format '{{.Id}}' | grep -Eq '^sha256:'
+
+  release:
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: sub2api-image-updater-linux-amd64
+      - name: Create or resume QA release metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="qa-v${QA_VERSION}"
+          remote_tag="$(git ls-remote --tags origin "refs/tags/${tag}" | cut -f1)"
+          if [ -n "${remote_tag}" ] && [ "${remote_tag}" != "${GITHUB_SHA}" ]; then
+            echo "Release tag ${tag} belongs to ${remote_tag}, not ${GITHUB_SHA}." >&2
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            if [ -z "${remote_tag}" ]; then
+              echo "Release ${tag} exists without a matching immutable tag." >&2
+              exit 1
+            fi
+            release_target="$(gh release view "$tag" --json targetCommitish --jq '.targetCommitish')"
+            if [ "${release_target}" != "${GITHUB_SHA}" ]; then
+              echo "Release ${tag} targets ${release_target}, not ${GITHUB_SHA}." >&2
+              exit 1
+            fi
+            if ! gh release view "$tag" --json assets --jq '.assets[].name' | grep -Fxq 'sub2api-image-updater'; then
+              gh release upload "$tag" sub2api-image-updater
+            fi
+          elif [ -n "${remote_tag}" ]; then
+            gh release create "$tag" sub2api-image-updater \
+              --verify-tag \
+              --target "${GITHUB_SHA}" \
+              --title "QA ${QA_VERSION}" \
+              --notes "QA image: ${QA_REPOSITORY}:${QA_VERSION}; source commit: ${GITHUB_SHA}"
+          else
+            gh release create "$tag" sub2api-image-updater \
+              --title "QA ${QA_VERSION}" \
+              --target "${GITHUB_SHA}" \
+              --notes "QA image: ${QA_REPOSITORY}:${QA_VERSION}; source commit: ${GITHUB_SHA}"

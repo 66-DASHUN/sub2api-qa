@@ -50,6 +50,54 @@ See [APPLE_CONTAINER.md](./APPLE_CONTAINER.md) for configuration, upgrades, pers
 
 ## Docker Deployment (Recommended)
 
+### QA Fork: Page Updates and Compose Fallback
+
+The QA fork uses the official release number as both the application version
+and the immutable image tag:
+
+```text
+merge upstream vX.Y.Z -> test -> publish ghcr.io/66-dashun/sub2api:X.Y.Z -> update the server
+```
+
+The administrator page and the Compose fallback both update `SUB2API_VERSION`
+and only recreate the `sub2api` service. PostgreSQL, Redis, and `/app/data`
+remain outside the image. The application never receives the Docker Socket.
+
+For the page update button, install the root-owned helper before switching
+`UPDATE_MODE=container`:
+
+```bash
+sudo install -d -o root -g 1000 -m 0750 /etc/sub2api-image-updater
+sudo install -d -o root -g root -m 0750 /var/lib/sub2api-image-updater
+sudo install -m 0755 sub2api-image-updater /usr/local/sbin/sub2api-image-updater
+sudo install -m 0644 deploy/image-updater/config.example.yaml /etc/sub2api-image-updater/config.yaml
+sudo install -m 0644 deploy/sub2api-image-updater.service /etc/systemd/system/sub2api-image-updater.service
+sudo chmod 0600 /etc/sub2api-image-updater/config.yaml
+```
+
+Create the client token through the server's secret management process. Do not
+put its contents in `.env`, Compose, the web UI, Git, or an image layer. The QA
+release repository is public, so no GitHub API token is required. For a private
+GHCR package, authenticate Docker on the host as root using your secret manager
+before the helper pulls an image. The shared client token must be owned by
+`root:1000` with mode `0640`. Then enable the helper and start the application
+with the QA override:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now sub2api-image-updater
+docker compose -f docker-compose.yml -f docker-compose.qa-update.yml pull sub2api
+docker compose -f docker-compose.yml -f docker-compose.qa-update.yml up -d --no-deps sub2api
+```
+
+For manual recovery or first deployment, use only `docker-compose.yml`, leave
+`UPDATE_MODE=manual`, set `SUB2API_VERSION` to an already published immutable
+tag, and run `docker compose pull sub2api` followed by
+`docker compose up -d --no-deps sub2api`. The base file does not mount helper
+paths, and manual mode prevents the administrator page from replacing the QA
+binary with an official release binary. `UPDATE_MODE=binary` is reserved for
+non-container binary installations. Never use `latest` or the mutable `QA` tag.
+
 ### Method 1: One-Click Deployment (Recommended)
 
 Use the automated preparation script for the easiest setup:

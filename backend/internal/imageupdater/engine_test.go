@@ -41,19 +41,23 @@ func (r *fakeCommandRunner) Run(_ context.Context, name string, args ...string) 
 }
 
 type fakeReleaseVerifier struct {
-	calls   []string
-	err     error
-	entered chan struct{}
-	release chan struct{}
+	calls    []string
+	err      error
+	revision string
+	entered  chan struct{}
+	release  chan struct{}
 }
 
-func (v *fakeReleaseVerifier) Verify(_ context.Context, repo, prefix, version string) error {
+func (v *fakeReleaseVerifier) Verify(_ context.Context, repo, prefix, version string) (string, error) {
 	v.calls = append(v.calls, repo+"|"+prefix+"|"+version)
 	if v.entered != nil {
 		close(v.entered)
 		<-v.release
 	}
-	return v.err
+	if v.revision == "" {
+		v.revision = "0123456789abcdef0123456789abcdef01234567"
+	}
+	return v.revision, v.err
 }
 
 type fakeHealthChecker struct {
@@ -72,16 +76,17 @@ func testEngineConfig(t *testing.T) Config {
 	envPath := filepath.Join(dir, ".env")
 	require.NoError(t, os.WriteFile(envPath, []byte("DB_HOST=postgres\nSUB2API_VERSION=0.1.171\n"), 0600))
 	return Config{
-		ImageRepository:   "ghcr.io/66-dashun/sub2api",
-		ExpectedSource:    "https://github.com/66-DASHUN/sub2api-qa",
-		ComposeProjectDir: dir,
-		ComposeFile:       filepath.Join(dir, "docker-compose.yml"),
-		ComposeEnvFile:    envPath,
-		ComposeService:    "sub2api",
-		ReleaseRepo:       "66-DASHUN/sub2api-qa",
-		ReleasePrefix:     "qa-v",
-		StateFile:         filepath.Join(dir, "state.json"),
-		HealthURL:         "http://127.0.0.1:8080/health",
+		ImageRepository:     "ghcr.io/66-dashun/sub2api",
+		ExpectedSource:      "https://github.com/66-DASHUN/sub2api-qa",
+		ComposeProjectDir:   dir,
+		ComposeFile:         filepath.Join(dir, "docker-compose.yml"),
+		ComposeOverrideFile: filepath.Join(dir, "docker-compose.qa-update.yml"),
+		ComposeEnvFile:      envPath,
+		ComposeService:      "sub2api",
+		ReleaseRepo:         "66-DASHUN/sub2api-qa",
+		ReleasePrefix:       "qa-v",
+		StateFile:           filepath.Join(dir, "state.json"),
+		HealthURL:           "http://127.0.0.1:8080/health",
 	}
 }
 
@@ -98,6 +103,7 @@ func TestEngineStageUsesFixedCommandsAndWritesVerifiedState(t *testing.T) {
 		{Output: "sha256:image-id\n"},
 		{Output: "0.1.172\n"},
 		{Output: "https://github.com/66-DASHUN/sub2api-qa\n"},
+		{Output: "0123456789abcdef0123456789abcdef01234567\n"},
 	}}
 	verifier := &fakeReleaseVerifier{}
 	engine := newTestEngine(t, runner, verifier, &fakeHealthChecker{})
@@ -111,6 +117,7 @@ func TestEngineStageUsesFixedCommandsAndWritesVerifiedState(t *testing.T) {
 		{Name: "docker", Args: []string{"image", "inspect", "--format", "{{.Id}}", image}},
 		{Name: "docker", Args: []string{"image", "inspect", "--format", `{{index .Config.Labels "org.opencontainers.image.version"}}`, image}},
 		{Name: "docker", Args: []string{"image", "inspect", "--format", `{{index .Config.Labels "org.opencontainers.image.source"}}`, image}},
+		{Name: "docker", Args: []string{"image", "inspect", "--format", `{{index .Config.Labels "org.opencontainers.image.revision"}}`, image}},
 	}, runner.calls)
 
 	state, err := NewStateStore(engine.Config().StateFile).Load()
@@ -118,6 +125,23 @@ func TestEngineStageUsesFixedCommandsAndWritesVerifiedState(t *testing.T) {
 	require.Equal(t, "0.1.172", state.Version)
 	require.Equal(t, "0.1.171", state.PreviousVersion)
 	require.Equal(t, "sha256:image-id", state.ImageID)
+}
+
+func TestEngineStageRejectsRevisionNotBoundToRelease(t *testing.T) {
+	runner := &fakeCommandRunner{results: []commandResult{
+		{},
+		{Output: "sha256:image-id"},
+		{Output: "0.1.172"},
+		{Output: "https://github.com/66-DASHUN/sub2api-qa"},
+		{Output: "ffffffffffffffffffffffffffffffffffffffff"},
+	}}
+	engine := newTestEngine(t, runner, &fakeReleaseVerifier{revision: "0123456789abcdef0123456789abcdef01234567"}, &fakeHealthChecker{})
+
+	err := engine.Stage(context.Background(), "0.1.172")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "revision label")
+	_, err = NewStateStore(engine.Config().StateFile).Load()
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestEngineStageRejectsMismatchedImageLabels(t *testing.T) {
@@ -152,7 +176,12 @@ func TestEngineApplyRecreatesOnlyApplicationAndClearsState(t *testing.T) {
 	version, err := ReadEnvVersion(engine.Config().ComposeEnvFile)
 	require.NoError(t, err)
 	require.Equal(t, "0.1.172", version)
-	composePrefix := []string{"compose", "--project-directory", engine.Config().ComposeProjectDir, "--env-file", engine.Config().ComposeEnvFile, "-f", engine.Config().ComposeFile}
+	composePrefix := []string{
+		"compose", "--project-directory", engine.Config().ComposeProjectDir,
+		"--env-file", engine.Config().ComposeEnvFile,
+		"-f", engine.Config().ComposeFile,
+		"-f", engine.Config().ComposeOverrideFile,
+	}
 	require.Equal(t, commandCall{Name: "docker", Args: append(append([]string{}, composePrefix...), "up", "-d", "--no-deps", "--force-recreate", "sub2api")}, runner.calls[0])
 	require.Equal(t, commandCall{Name: "docker", Args: append(append([]string{}, composePrefix...), "ps", "-q", "sub2api")}, runner.calls[1])
 	require.Equal(t, commandCall{Name: "docker", Args: []string{"inspect", "--format", "{{.Image}}", "container-id"}}, runner.calls[2])
@@ -187,6 +216,7 @@ func TestEngineRejectsConcurrentOperations(t *testing.T) {
 		{Output: "sha256:image-id"},
 		{Output: "0.1.172"},
 		{Output: "https://github.com/66-DASHUN/sub2api-qa"},
+		{Output: "0123456789abcdef0123456789abcdef01234567"},
 	}}
 	engine := newTestEngine(t, runner, verifier, &fakeHealthChecker{})
 	done := make(chan error, 1)

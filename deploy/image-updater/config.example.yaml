@@ -1,0 +1,20 @@
+socket: /run/sub2api-image-updater/updater.sock
+token_file: /etc/sub2api-image-updater/client-token
+# The QA release repository is public.
+github_token_file: ""
+proxy_url: ""
+image_repository: ghcr.io/66-dashun/sub2api
+expected_source: https://github.com/66-DASHUN/sub2api-qa
+compose_project_dir: /root/sub2api
+compose_file: /root/sub2api/docker-compose.yml
+compose_override_file: /root/sub2api/docker-compose.qa-update.yml
+compose_env_file: /root/sub2api/.env
+compose_service: sub2api
+release_repo: 66-DASHUN/sub2api-qa
+release_prefix: qa-v
+state_file: /var/lib/sub2api-image-updater/state.json
+health_url: http://127.0.0.1:8080/health
+stage_timeout_seconds: 1800
+apply_timeout_seconds: 1800
+health_timeout_seconds: 300
+health_interval_milliseconds: 2000

@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
@@ -30,6 +33,28 @@ func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config) service.Conc
 // 从配置中读取代理设置，支持国内服务器通过代理访问 GitHub
 func ProvideGitHubReleaseClient(cfg *config.Config) service.GitHubReleaseClient {
 	return NewGitHubReleaseClientWithTokenFile(cfg.Update.ProxyURL, cfg.Security.ProxyFallback.AllowDirectOnError, cfg.Update.GitHubTokenFile)
+}
+
+// ProvideImageUpdaterClient creates the optional container-mode update client.
+// Binary-mode deployments do not need the helper socket or its token file.
+func ProvideImageUpdaterClient(cfg *config.Config) (service.ContainerUpdateClient, error) {
+	if cfg == nil || strings.TrimSpace(cfg.Update.Mode) != service.UpdateModeContainer {
+		return nil, nil
+	}
+	socketPath := strings.TrimSpace(cfg.Update.HelperSocket)
+	tokenPath := strings.TrimSpace(cfg.Update.HelperTokenFile)
+	if socketPath == "" || tokenPath == "" {
+		return nil, fmt.Errorf("container update helper socket and token file are required")
+	}
+	token, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("read container update helper token: %w", err)
+	}
+	value := strings.TrimSpace(string(token))
+	if value == "" {
+		return nil, fmt.Errorf("container update helper token file is empty")
+	}
+	return NewImageUpdaterClient(socketPath, value), nil
 }
 
 // ProvidePricingRemoteClient 创建定价数据远程客户端
@@ -153,6 +178,7 @@ var ProviderSet = wire.NewSet(
 	NewAliyunCaptchaVerifier,
 	ProvidePricingRemoteClient,
 	ProvideGitHubReleaseClient,
+	ProvideImageUpdaterClient,
 	NewProxyExitInfoProber,
 	NewClaudeUsageFetcher,
 	NewClaudeOAuthClient,

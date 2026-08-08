@@ -19,7 +19,7 @@ export interface VersionInfo {
   cached: boolean
   warning?: string
   build_type: string // "source" for manual builds, "release" for CI builds
-  update_mode?: 'binary' | 'container'
+  update_mode?: 'binary' | 'container' | 'manual'
   update_source?: string
 }
 

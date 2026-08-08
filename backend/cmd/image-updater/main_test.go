@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/imageupdater"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,6 +19,27 @@ type fakeHelperEngine struct {
 	stageCalls  []string
 	applyCalled chan struct{}
 	applyBlock  chan struct{}
+}
+
+type fakeReleaseClient struct {
+	releases []*service.GitHubRelease
+	err      error
+}
+
+func (c *fakeReleaseClient) FetchLatestRelease(context.Context, string) (*service.GitHubRelease, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (c *fakeReleaseClient) FetchRecentReleases(context.Context, string, int) ([]*service.GitHubRelease, error) {
+	return c.releases, c.err
+}
+
+func (c *fakeReleaseClient) DownloadFile(context.Context, string, string, int64) error {
+	return errors.New("not implemented")
+}
+
+func (c *fakeReleaseClient) FetchChecksumFile(context.Context, string) ([]byte, error) {
+	return nil, errors.New("not implemented")
 }
 
 func (e *fakeHelperEngine) Stage(_ context.Context, version string) error {
@@ -88,6 +111,26 @@ func TestHelperApplyWithoutStagedReturnsConflict(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusConflict, rec.Code)
+}
+
+func TestGitHubReleaseVerifierReturnsBoundCommit(t *testing.T) {
+	const revision = "0123456789abcdef0123456789abcdef01234567"
+	verifier := githubReleaseVerifier{client: &fakeReleaseClient{releases: []*service.GitHubRelease{{
+		TagName: "qa-v0.1.172", TargetCommitish: revision,
+	}}}}
+
+	actual, err := verifier.Verify(context.Background(), "66-DASHUN/sub2api-qa", "qa-v", "0.1.172")
+	require.NoError(t, err)
+	require.Equal(t, revision, actual)
+}
+
+func TestGitHubReleaseVerifierRejectsBranchTarget(t *testing.T) {
+	verifier := githubReleaseVerifier{client: &fakeReleaseClient{releases: []*service.GitHubRelease{{
+		TagName: "qa-v0.1.172", TargetCommitish: "qa/grok-video-1080p",
+	}}}}
+
+	_, err := verifier.Verify(context.Background(), "66-DASHUN/sub2api-qa", "qa-v", "0.1.172")
+	require.Error(t, err)
 }
 
 var _ imageupdater.CommandRunner

@@ -1269,6 +1269,13 @@ update:
   # Leave empty for direct connection (recommended for overseas servers)
   # 留空表示直连（适用于海外服务器）
   proxy_url: ""
+  mode: "manual"
+  release_repo: ""
+  release_tag_prefix: ""
+  helper_socket: ""
+  helper_token_file: ""
+  # The QA release repository is public.
+  github_token_file: ""
 
 # =============================================================================
 # Image Storage (异步图片任务结果对象存储)

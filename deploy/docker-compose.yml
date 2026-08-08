@@ -16,7 +16,7 @@ services:
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    image: weishaw/sub2api:latest
+    image: ghcr.io/66-dashun/sub2api:${SUB2API_VERSION:-0.1.171}
     container_name: sub2api
     restart: unless-stopped
     security_opt:
@@ -52,6 +52,13 @@ services:
       - ENABLE_SERVER_TIMING=${ENABLE_SERVER_TIMING:-false}
       - RUN_MODE=${RUN_MODE:-standard}
       - UPDATE_GITHUB_TOKEN=${UPDATE_GITHUB_TOKEN:-}
+      - UPDATE_MODE=${UPDATE_MODE:-manual}
+      - UPDATE_RELEASE_REPO=${UPDATE_RELEASE_REPO:-}
+      - UPDATE_RELEASE_TAG_PREFIX=${UPDATE_RELEASE_TAG_PREFIX:-}
+      - UPDATE_HELPER_SOCKET=${UPDATE_HELPER_SOCKET:-}
+      - UPDATE_HELPER_TOKEN_FILE=${UPDATE_HELPER_TOKEN_FILE:-}
+      # Optional for private GitHub releases; the public QA repository needs no API token.
+      - UPDATE_GITHUB_TOKEN_FILE=${UPDATE_GITHUB_TOKEN_FILE:-}
       - ALIPAY_MOBILE_PRECREATE_DEEP_LINK=${ALIPAY_MOBILE_PRECREATE_DEEP_LINK:-}
 
       # =======================================================================

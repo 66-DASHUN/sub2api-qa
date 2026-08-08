@@ -1,0 +1,28 @@
+[Unit]
+Description=Sub2API private image update helper
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# GID 1000 matches the non-root sub2api group inside the image.
+Group=1000
+UMask=0007
+ExecStart=/usr/local/sbin/sub2api-image-updater -config /etc/sub2api-image-updater/config.yaml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/sub2api-image-updater /root/sub2api /run/sub2api-image-updater
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RuntimeDirectory=sub2api-image-updater
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

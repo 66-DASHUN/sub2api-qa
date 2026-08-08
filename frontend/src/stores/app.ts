@@ -42,7 +42,7 @@ export const useAppStore = defineStore('app', () => {
   const latestVersion = ref<string>('')
   const hasUpdate = ref<boolean>(false)
   const buildType = ref<string>('source')
-  const updateMode = ref<'binary' | 'container'>('binary')
+  const updateMode = ref<'binary' | 'container' | 'manual'>('binary')
   const updateSource = ref<string>('')
   const releaseInfo = ref<ReleaseInfo | null>(null)
 

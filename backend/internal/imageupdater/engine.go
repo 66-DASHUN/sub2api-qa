@@ -16,21 +16,23 @@ var (
 )
 
 const (
-	versionLabelFormat = `{{index .Config.Labels "org.opencontainers.image.version"}}`
-	sourceLabelFormat  = `{{index .Config.Labels "org.opencontainers.image.source"}}`
+	versionLabelFormat  = `{{index .Config.Labels "org.opencontainers.image.version"}}`
+	sourceLabelFormat   = `{{index .Config.Labels "org.opencontainers.image.source"}}`
+	revisionLabelFormat = `{{index .Config.Labels "org.opencontainers.image.revision"}}`
 )
 
 type Config struct {
-	ImageRepository   string
-	ExpectedSource    string
-	ComposeProjectDir string
-	ComposeFile       string
-	ComposeEnvFile    string
-	ComposeService    string
-	ReleaseRepo       string
-	ReleasePrefix     string
-	StateFile         string
-	HealthURL         string
+	ImageRepository     string
+	ExpectedSource      string
+	ComposeProjectDir   string
+	ComposeFile         string
+	ComposeOverrideFile string
+	ComposeEnvFile      string
+	ComposeService      string
+	ReleaseRepo         string
+	ReleasePrefix       string
+	StateFile           string
+	HealthURL           string
 }
 
 type CommandRunner interface {
@@ -38,7 +40,7 @@ type CommandRunner interface {
 }
 
 type ReleaseVerifier interface {
-	Verify(ctx context.Context, repo, prefix, version string) error
+	Verify(ctx context.Context, repo, prefix, version string) (string, error)
 }
 
 type HealthChecker interface {
@@ -91,7 +93,8 @@ func (e *Engine) Stage(ctx context.Context, version string) error {
 	if err != nil {
 		return err
 	}
-	if err := e.releases.Verify(ctx, e.config.ReleaseRepo, e.config.ReleasePrefix, normalized); err != nil {
+	expectedRevision, err := e.releases.Verify(ctx, e.config.ReleaseRepo, e.config.ReleasePrefix, normalized)
+	if err != nil {
 		return fmt.Errorf("verify QA release: %w", err)
 	}
 	image, err := ImageReference(e.config.ImageRepository, normalized)
@@ -122,6 +125,13 @@ func (e *Engine) Stage(ctx context.Context, version string) error {
 	}
 	if strings.TrimSpace(sourceLabel) != e.config.ExpectedSource {
 		return fmt.Errorf("image source label mismatch")
+	}
+	revisionLabel, err := e.run(ctx, "docker", "image", "inspect", "--format", revisionLabelFormat, image)
+	if err != nil {
+		return fmt.Errorf("inspect image revision label: %w", err)
+	}
+	if strings.TrimSpace(revisionLabel) != expectedRevision {
+		return fmt.Errorf("image revision label mismatch")
 	}
 	previousVersion, err := ReadEnvVersion(e.config.ComposeEnvFile)
 	if err != nil {
@@ -210,12 +220,16 @@ func (e *Engine) recreateApplication(ctx context.Context) error {
 }
 
 func (e *Engine) composePrefix() []string {
-	return []string{
+	args := []string{
 		"compose",
 		"--project-directory", e.config.ComposeProjectDir,
 		"--env-file", e.config.ComposeEnvFile,
 		"-f", e.config.ComposeFile,
 	}
+	if e.config.ComposeOverrideFile != "" {
+		args = append(args, "-f", e.config.ComposeOverrideFile)
+	}
+	return args
 }
 
 func (e *Engine) run(ctx context.Context, name string, args ...string) (string, error) {
@@ -245,6 +259,9 @@ func validateConfig(config Config) error {
 		if !filepath.IsAbs(value) {
 			return fmt.Errorf("%s must be absolute", name)
 		}
+	}
+	if config.ComposeOverrideFile != "" && !filepath.IsAbs(config.ComposeOverrideFile) {
+		return fmt.Errorf("compose_override_file must be absolute")
 	}
 	if strings.ContainsAny(config.ComposeService, " \t\r\n/") {
 		return fmt.Errorf("invalid compose service")

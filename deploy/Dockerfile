@@ -83,10 +83,19 @@ RUN VERSION_VALUE="${VERSION}" && \
 # -----------------------------------------------------------------------------
 FROM ${ALPINE_IMAGE}
 
+ARG VERSION=0.1.171
+ARG COMMIT=unknown
+ARG DATE=unknown
+ARG SOURCE_REPOSITORY=https://github.com/66-DASHUN/sub2api-qa
+
 # Labels
 LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
 LABEL description="Sub2API - AI API Gateway Platform"
-LABEL org.opencontainers.image.source="https://github.com/Wei-Shaw/sub2api"
+LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${COMMIT}"
+LABEL org.opencontainers.image.created="${DATE}"
+LABEL org.opencontainers.image.title="Sub2API QA"
 
 # Install runtime dependencies
 RUN apk add --no-cache \

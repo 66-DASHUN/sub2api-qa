@@ -160,6 +160,35 @@ func TestContainerRestartSurfacesNoStagedUpdate(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoStagedContainerUpdate)
 }
 
+func TestManualModeNeverUsesBinaryUpdater(t *testing.T) {
+	github := &updateServiceGitHubClientStub{}
+	svc := NewUpdateService(
+		&updateServiceCacheStub{},
+		github,
+		"0.1.171",
+		"release",
+		UpdateServiceOptions{Mode: UpdateModeManual},
+	)
+
+	info, err := svc.CheckUpdate(context.Background(), true)
+	require.NoError(t, err)
+	require.Equal(t, UpdateModeManual, info.UpdateMode)
+	require.Equal(t, "docker-compose", info.UpdateSource)
+	require.False(t, info.HasUpdate)
+	require.Equal(t, "0.1.171", info.LatestVersion)
+	require.ErrorIs(t, svc.PerformUpdate(context.Background()), ErrManualUpdateRequired)
+	require.ErrorIs(t, svc.Rollback(), ErrManualUpdateRequired)
+	require.ErrorIs(t, svc.RollbackToVersion(context.Background(), "0.1.170"), ErrManualUpdateRequired)
+	versions, err := svc.ListRollbackVersions(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, versions)
+	handled, err := svc.Restart(context.Background())
+	require.NoError(t, err)
+	require.False(t, handled)
+	require.Zero(t, github.latestCalls)
+	require.Zero(t, github.recentCalls)
+}
+
 func TestContainerCacheDoesNotReuseBinaryRelease(t *testing.T) {
 	cache := &updateServiceCacheStub{}
 	binary := NewUpdateService(

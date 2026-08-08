@@ -28,6 +28,7 @@ var (
 	ErrContainerUpdateUnavailable   = infraerrors.ServiceUnavailable("CONTAINER_UPDATE_UNAVAILABLE", "container update helper is not configured")
 	ErrNoStagedContainerUpdate      = infraerrors.Conflict("NO_STAGED_CONTAINER_UPDATE", "no staged container update is available")
 	ErrContainerRollbackUnsupported = infraerrors.BadRequest("CONTAINER_ROLLBACK_UNSUPPORTED", "local binary rollback is not available in container mode")
+	ErrManualUpdateRequired         = infraerrors.BadRequest("MANUAL_UPDATE_REQUIRED", "updates for this deployment must be applied with Docker Compose")
 )
 
 const (
@@ -37,6 +38,7 @@ const (
 	containerFetchPageSize = 30
 	UpdateModeBinary       = "binary"
 	UpdateModeContainer    = "container"
+	UpdateModeManual       = "manual"
 
 	// Security: allowed download domains for updates
 	allowedDownloadHost = "github.com"
@@ -98,7 +100,7 @@ func NewUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, versi
 		opts = options[0]
 	}
 	mode := strings.TrimSpace(opts.Mode)
-	if mode != UpdateModeContainer {
+	if mode != UpdateModeContainer && mode != UpdateModeManual {
 		mode = UpdateModeBinary
 	}
 	repo := strings.TrimSpace(opts.ReleaseRepo)
@@ -153,14 +155,15 @@ type Asset struct {
 
 // GitHubRelease represents GitHub API response
 type GitHubRelease struct {
-	TagName     string        `json:"tag_name"`
-	Name        string        `json:"name"`
-	Body        string        `json:"body"`
-	PublishedAt string        `json:"published_at"`
-	HTMLURL     string        `json:"html_url"`
-	Draft       bool          `json:"draft"`
-	Prerelease  bool          `json:"prerelease"`
-	Assets      []GitHubAsset `json:"assets"`
+	TagName         string        `json:"tag_name"`
+	TargetCommitish string        `json:"target_commitish"`
+	Name            string        `json:"name"`
+	Body            string        `json:"body"`
+	PublishedAt     string        `json:"published_at"`
+	HTMLURL         string        `json:"html_url"`
+	Draft           bool          `json:"draft"`
+	Prerelease      bool          `json:"prerelease"`
+	Assets          []GitHubAsset `json:"assets"`
 }
 
 // RollbackVersion describes a release version the system can roll back to
@@ -178,6 +181,16 @@ type GitHubAsset struct {
 
 // CheckUpdate checks for available updates
 func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInfo, error) {
+	if s.isManualMode() {
+		return &UpdateInfo{
+			CurrentVersion: s.currentVersion,
+			LatestVersion:  s.currentVersion,
+			HasUpdate:      false,
+			BuildType:      s.buildType,
+			UpdateMode:     UpdateModeManual,
+			UpdateSource:   "docker-compose",
+		}, nil
+	}
 	// Try cache first
 	if !force {
 		if cached, err := s.getFromCache(ctx); err == nil && cached != nil {
@@ -212,6 +225,9 @@ func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInf
 // PerformUpdate downloads and applies the update
 // Uses atomic file replacement pattern for safe in-place updates
 func (s *UpdateService) PerformUpdate(ctx context.Context) error {
+	if s.isManualMode() {
+		return ErrManualUpdateRequired
+	}
 	info, err := s.CheckUpdate(ctx, true)
 	if err != nil {
 		return err
@@ -348,6 +364,9 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 
 // Rollback restores the previous version
 func (s *UpdateService) Rollback() error {
+	if s.isManualMode() {
+		return ErrManualUpdateRequired
+	}
 	if s.isContainerMode() {
 		return ErrContainerRollbackUnsupported
 	}
@@ -377,6 +396,9 @@ func (s *UpdateService) Rollback() error {
 // strictly older than the current version (the current version itself is excluded),
 // newest first. Draft and prerelease entries are skipped.
 func (s *UpdateService) ListRollbackVersions(ctx context.Context) ([]RollbackVersion, error) {
+	if s.isManualMode() {
+		return []RollbackVersion{}, nil
+	}
 	releases, err := s.fetchRollbackCandidates(ctx)
 	if err != nil {
 		return nil, err
@@ -401,6 +423,9 @@ func (s *UpdateService) ListRollbackVersions(ctx context.Context) ([]RollbackVer
 // The target must be one of the versions returned by ListRollbackVersions;
 // anything else (including the current version) is rejected.
 func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) error {
+	if s.isManualMode() {
+		return ErrManualUpdateRequired
+	}
 	target := strings.TrimPrefix(strings.TrimSpace(version), "v")
 	if target == "" {
 		return ErrRollbackVersionNotAllowed
@@ -547,6 +572,10 @@ func (s *UpdateService) Restart(ctx context.Context) (bool, error) {
 
 func (s *UpdateService) isContainerMode() bool {
 	return s.updateMode == UpdateModeContainer
+}
+
+func (s *UpdateService) isManualMode() bool {
+	return s.updateMode == UpdateModeManual
 }
 
 func (s *UpdateService) containerClient() (ContainerUpdateClient, error) {

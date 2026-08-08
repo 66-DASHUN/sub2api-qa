@@ -234,27 +234,28 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 type helperConfig struct {
-	Socket            string        `yaml:"socket"`
-	TokenFile         string        `yaml:"token_file"`
-	GitHubTokenFile   string        `yaml:"github_token_file"`
-	ProxyURL          string        `yaml:"proxy_url"`
-	ImageRepository   string        `yaml:"image_repository"`
-	ExpectedSource    string        `yaml:"expected_source"`
-	ComposeProjectDir string        `yaml:"compose_project_dir"`
-	ComposeFile       string        `yaml:"compose_file"`
-	ComposeEnvFile    string        `yaml:"compose_env_file"`
-	ComposeService    string        `yaml:"compose_service"`
-	ReleaseRepo       string        `yaml:"release_repo"`
-	ReleasePrefix     string        `yaml:"release_prefix"`
-	StateFile         string        `yaml:"state_file"`
-	HealthURL         string        `yaml:"health_url"`
-	StageTimeout      time.Duration `yaml:"-"`
-	ApplyTimeout      time.Duration `yaml:"-"`
-	HealthTimeout     time.Duration `yaml:"-"`
-	StageTimeoutSecs  int           `yaml:"stage_timeout_seconds"`
-	ApplyTimeoutSecs  int           `yaml:"apply_timeout_seconds"`
-	HealthTimeoutSecs int           `yaml:"health_timeout_seconds"`
-	HealthIntervalMS  int           `yaml:"health_interval_milliseconds"`
+	Socket              string        `yaml:"socket"`
+	TokenFile           string        `yaml:"token_file"`
+	GitHubTokenFile     string        `yaml:"github_token_file"`
+	ProxyURL            string        `yaml:"proxy_url"`
+	ImageRepository     string        `yaml:"image_repository"`
+	ExpectedSource      string        `yaml:"expected_source"`
+	ComposeProjectDir   string        `yaml:"compose_project_dir"`
+	ComposeFile         string        `yaml:"compose_file"`
+	ComposeOverrideFile string        `yaml:"compose_override_file"`
+	ComposeEnvFile      string        `yaml:"compose_env_file"`
+	ComposeService      string        `yaml:"compose_service"`
+	ReleaseRepo         string        `yaml:"release_repo"`
+	ReleasePrefix       string        `yaml:"release_prefix"`
+	StateFile           string        `yaml:"state_file"`
+	HealthURL           string        `yaml:"health_url"`
+	StageTimeout        time.Duration `yaml:"-"`
+	ApplyTimeout        time.Duration `yaml:"-"`
+	HealthTimeout       time.Duration `yaml:"-"`
+	StageTimeoutSecs    int           `yaml:"stage_timeout_seconds"`
+	ApplyTimeoutSecs    int           `yaml:"apply_timeout_seconds"`
+	HealthTimeoutSecs   int           `yaml:"health_timeout_seconds"`
+	HealthIntervalMS    int           `yaml:"health_interval_milliseconds"`
 }
 
 func loadHelperConfig(path string) (helperConfig, error) {
@@ -278,8 +279,9 @@ func (c *helperConfig) validate() error {
 	for name, value := range map[string]string{
 		"socket": c.Socket, "token_file": c.TokenFile, "image_repository": c.ImageRepository,
 		"expected_source": c.ExpectedSource, "compose_project_dir": c.ComposeProjectDir,
-		"compose_file": c.ComposeFile, "compose_env_file": c.ComposeEnvFile,
-		"compose_service": c.ComposeService, "release_repo": c.ReleaseRepo,
+		"compose_file": c.ComposeFile, "compose_override_file": c.ComposeOverrideFile,
+		"compose_env_file": c.ComposeEnvFile,
+		"compose_service":  c.ComposeService, "release_repo": c.ReleaseRepo,
 		"release_prefix": c.ReleasePrefix, "state_file": c.StateFile, "health_url": c.HealthURL,
 	} {
 		if strings.TrimSpace(value) == "" {
@@ -288,7 +290,8 @@ func (c *helperConfig) validate() error {
 	}
 	for name, value := range map[string]string{
 		"socket": c.Socket, "token_file": c.TokenFile, "compose_project_dir": c.ComposeProjectDir,
-		"compose_file": c.ComposeFile, "compose_env_file": c.ComposeEnvFile, "state_file": c.StateFile,
+		"compose_file": c.ComposeFile, "compose_override_file": c.ComposeOverrideFile,
+		"compose_env_file": c.ComposeEnvFile, "state_file": c.StateFile,
 	} {
 		if !filepath.IsAbs(value) {
 			return fmt.Errorf("%s must be absolute", name)
@@ -341,18 +344,34 @@ type githubReleaseVerifier struct {
 	client service.GitHubReleaseClient
 }
 
-func (v githubReleaseVerifier) Verify(ctx context.Context, repo, prefix, version string) error {
+func (v githubReleaseVerifier) Verify(ctx context.Context, repo, prefix, version string) (string, error) {
 	target := prefix + version
 	releases, err := v.client.FetchRecentReleases(ctx, repo, 100)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, release := range releases {
 		if release != nil && !release.Draft && !release.Prerelease && release.TagName == target {
-			return nil
+			revision := strings.TrimSpace(release.TargetCommitish)
+			if !isFullGitCommit(revision) {
+				return "", fmt.Errorf("release %s does not target a full commit SHA", target)
+			}
+			return revision, nil
 		}
 	}
-	return fmt.Errorf("release %s was not found", target)
+	return "", fmt.Errorf("release %s was not found", target)
+}
+
+func isFullGitCommit(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 type httpHealthChecker struct {
@@ -403,16 +422,17 @@ func buildEngine(cfg helperConfig) (*imageupdater.Engine, error) {
 		interval: time.Duration(cfg.HealthIntervalMS) * time.Millisecond,
 	}
 	return imageupdater.NewEngine(imageupdater.Config{
-		ImageRepository:   cfg.ImageRepository,
-		ExpectedSource:    cfg.ExpectedSource,
-		ComposeProjectDir: cfg.ComposeProjectDir,
-		ComposeFile:       cfg.ComposeFile,
-		ComposeEnvFile:    cfg.ComposeEnvFile,
-		ComposeService:    cfg.ComposeService,
-		ReleaseRepo:       cfg.ReleaseRepo,
-		ReleasePrefix:     cfg.ReleasePrefix,
-		StateFile:         cfg.StateFile,
-		HealthURL:         cfg.HealthURL,
+		ImageRepository:     cfg.ImageRepository,
+		ExpectedSource:      cfg.ExpectedSource,
+		ComposeProjectDir:   cfg.ComposeProjectDir,
+		ComposeFile:         cfg.ComposeFile,
+		ComposeOverrideFile: cfg.ComposeOverrideFile,
+		ComposeEnvFile:      cfg.ComposeEnvFile,
+		ComposeService:      cfg.ComposeService,
+		ReleaseRepo:         cfg.ReleaseRepo,
+		ReleasePrefix:       cfg.ReleasePrefix,
+		StateFile:           cfg.StateFile,
+		HealthURL:           cfg.HealthURL,
 	}, execCommandRunner{}, verifier, health)
 }
 
