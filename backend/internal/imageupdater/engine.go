@@ -71,6 +71,17 @@ func (e *Engine) Config() Config {
 	return e.config
 }
 
+func (e *Engine) HasStaged() (bool, error) {
+	_, err := e.state.Load()
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (e *Engine) Stage(ctx context.Context, version string) error {
 	if !e.mu.TryLock() {
 		return ErrOperationInProgress

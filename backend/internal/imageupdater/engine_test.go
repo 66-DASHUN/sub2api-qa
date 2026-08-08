@@ -208,3 +208,16 @@ func TestEngineApplyWithoutStateReturnsSentinel(t *testing.T) {
 	err := engine.Apply(context.Background())
 	require.ErrorIs(t, err, ErrNoStagedUpdate)
 }
+
+func TestEngineHasStagedReportsStatePresence(t *testing.T) {
+	engine := newTestEngine(t, &fakeCommandRunner{}, &fakeReleaseVerifier{}, &fakeHealthChecker{})
+	available, err := engine.HasStaged()
+	require.NoError(t, err)
+	require.False(t, available)
+	require.NoError(t, NewStateStore(engine.Config().StateFile).Save(State{
+		Version: "0.1.172", PreviousVersion: "0.1.171", ImageID: "sha256:image-id",
+	}))
+	available, err = engine.HasStaged()
+	require.NoError(t, err)
+	require.True(t, available)
+}
