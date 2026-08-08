@@ -517,12 +517,16 @@
                         <!-- Selected version: manual command (per deploy method) + confirm -->
                         <transition name="rollback">
                           <div v-if="selectedRollbackVersion" class="space-y-2">
-                            <p class="px-0.5 text-[11px] text-gray-400 dark:text-dark-500">
+                            <p
+                              v-if="!isContainerUpdate"
+                              class="px-0.5 text-[11px] text-gray-400 dark:text-dark-500"
+                            >
                               {{ t('version.manualRollbackCommand') }}
                             </p>
 
                             <!-- Terminal-style block with deploy-method tabs -->
                             <div
+                              v-if="!isContainerUpdate"
                               class="overflow-hidden rounded-lg border border-gray-200 dark:border-dark-600"
                             >
                               <div
@@ -676,6 +680,7 @@ const latestVersion = computed(() => appStore.latestVersion)
 const hasUpdate = computed(() => appStore.hasUpdate)
 const releaseInfo = computed(() => appStore.releaseInfo)
 const buildType = computed(() => appStore.buildType)
+const updateMode = computed(() => appStore.updateMode)
 
 // Update process states (local to this component)
 const updating = ref(false)
@@ -730,6 +735,7 @@ const activeManualCommand = computed(() =>
 
 // Only show update check for release builds (binary/docker deployment)
 const isReleaseBuild = computed(() => buildType.value === 'release')
+const isContainerUpdate = computed(() => updateMode.value === 'container')
 
 function toggleDropdown() {
   dropdownOpen.value = !dropdownOpen.value

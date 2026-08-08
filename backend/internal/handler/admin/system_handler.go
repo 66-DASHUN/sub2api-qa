@@ -49,6 +49,7 @@ type systemUpdateService interface {
 	Rollback() error
 	ListRollbackVersions(ctx context.Context) ([]service.RollbackVersion, error)
 	RollbackToVersion(ctx context.Context, version string) error
+	Restart(ctx context.Context) (bool, error)
 }
 
 // NewSystemHandler creates a new SystemHandler
@@ -213,13 +214,19 @@ func (h *SystemHandler) RestartService(c *gin.Context) {
 			release("", succeeded)
 		}()
 
-		// Schedule service restart in background after sending response
-		// This ensures the client receives the success response before the service restarts
-		go func() {
-			// Wait a moment to ensure the response is sent
-			time.Sleep(500 * time.Millisecond)
-			sysutil.RestartServiceAsync()
-		}()
+		restartCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		handled, err := h.updateSvc.Restart(restartCtx)
+		if err != nil {
+			return nil, err
+		}
+		if !handled {
+			// Binary mode keeps the upstream process-exit restart behavior.
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				sysutil.RestartServiceAsync()
+			}()
+		}
 		succeeded = true
 		return gin.H{
 			"message":      "Service restart initiated",

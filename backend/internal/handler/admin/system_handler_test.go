@@ -34,6 +34,9 @@ type systemHandlerUpdateServiceStub struct {
 	rollbackVersions      []service.RollbackVersion
 	rollbackVersionsErr   error
 	rollbackVersionsCall  int
+	restartCall           int
+	restartHandled        bool
+	restartErr            error
 }
 
 func (s *systemHandlerUpdateServiceStub) CheckUpdate(_ context.Context, force bool) (*service.UpdateInfo, error) {
@@ -64,6 +67,11 @@ func (s *systemHandlerUpdateServiceStub) RollbackToVersion(ctx context.Context, 
 	_, s.rollbackToHasDeadline = ctx.Deadline()
 	s.rollbackToVersions = append(s.rollbackToVersions, version)
 	return s.rollbackToErr
+}
+
+func (s *systemHandlerUpdateServiceStub) Restart(context.Context) (bool, error) {
+	s.restartCall++
+	return s.restartHandled, s.restartErr
 }
 
 type systemUpdateResponseEnvelope struct {
@@ -101,6 +109,7 @@ func newSystemHandlerTestRouter(t *testing.T, updateSvc *systemHandlerUpdateServ
 	router.POST("/api/v1/admin/system/update", handler.PerformUpdate)
 	router.POST("/api/v1/admin/system/rollback", handler.Rollback)
 	router.GET("/api/v1/admin/system/rollback-versions", handler.GetRollbackVersions)
+	router.POST("/api/v1/admin/system/restart", handler.RestartService)
 	return router
 }
 
@@ -321,4 +330,37 @@ func TestSystemHandlerGetRollbackVersionsError(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestSystemHandlerContainerRestartDelegatesToUpdateService(t *testing.T) {
+	updateSvc := &systemHandlerUpdateServiceStub{restartHandled: true}
+	repo := newMemoryIdempotencyRepoStub()
+	router := newSystemHandlerTestRouter(t, updateSvc, repo)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/restart", nil)
+	req.Header.Set("Idempotency-Key", "container-restart")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, 1, updateSvc.restartCall)
+	requireSystemLockStatus(t, repo, service.IdempotencyStatusSucceeded)
+}
+
+func TestSystemHandlerContainerRestartErrorIsReturned(t *testing.T) {
+	updateSvc := &systemHandlerUpdateServiceStub{
+		restartHandled: true,
+		restartErr:     service.ErrNoStagedContainerUpdate,
+	}
+	repo := newMemoryIdempotencyRepoStub()
+	router := newSystemHandlerTestRouter(t, updateSvc, repo)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/restart", nil)
+	req.Header.Set("Idempotency-Key", "container-restart-empty")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Equal(t, 1, updateSvc.restartCall)
+	requireSystemLockStatus(t, repo, service.IdempotencyStatusFailedRetryable)
 }
