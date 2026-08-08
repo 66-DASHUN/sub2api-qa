@@ -10,7 +10,7 @@ services:
           create_host_path: false
       - type: bind
         source: ${IMAGE_UPDATER_CLIENT_TOKEN_FILE:-/etc/sub2api-image-updater/client-token}
-        target: /run/sub2api-image-updater/client-token
+        target: /run/secrets/sub2api-updater-client-token
         read_only: true
         bind:
           create_host_path: false
@@ -19,5 +19,5 @@ services:
       UPDATE_RELEASE_REPO: 66-DASHUN/sub2api-qa
       UPDATE_RELEASE_TAG_PREFIX: qa-v
       UPDATE_HELPER_SOCKET: /run/sub2api-image-updater/updater.sock
-      UPDATE_HELPER_TOKEN_FILE: /run/sub2api-image-updater/client-token
+      UPDATE_HELPER_TOKEN_FILE: /run/secrets/sub2api-updater-client-token
       UPDATE_GITHUB_TOKEN_FILE: ${UPDATE_GITHUB_TOKEN_FILE:-}

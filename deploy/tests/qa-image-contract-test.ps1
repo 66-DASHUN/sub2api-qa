@@ -41,7 +41,11 @@ if ($compose -match 'target:\s*/run/sub2api-image-updater') {
 Require-Match $composeOverride 'UPDATE_MODE:\s*container' 'QA override does not enable container update mode'
 Require-Match $composeOverride 'UPDATE_RELEASE_REPO:\s*66-DASHUN/sub2api-qa' 'QA override release repository is missing'
 Require-Match $composeOverride 'UPDATE_RELEASE_TAG_PREFIX:\s*qa-v' 'QA override release prefix is missing'
-Require-Match $composeOverride 'target:\s*/run/sub2api-image-updater/client-token' 'Updater client token mount is missing'
+Require-Match $composeOverride 'target:\s*/run/secrets/sub2api-updater-client-token' 'Updater client token must use a path outside the read-only socket mount'
+Require-Match $composeOverride 'UPDATE_HELPER_TOKEN_FILE:\s*/run/secrets/sub2api-updater-client-token' 'Updater client token configuration must match the secret mount target'
+if ($composeOverride -match 'target:\s*/run/sub2api-image-updater/client-token') {
+    throw 'Updater client token must not be nested below the read-only socket mount'
+}
 Require-Match $composeOverride 'create_host_path:\s*false' 'Updater bind mounts may create missing secret paths'
 Require-Match $helperConfig 'compose_override_file:\s*/root/sub2api/docker-compose\.qa-update\.yml' 'Updater must preserve the QA Compose override when recreating the application'
 if (($compose + $composeOverride) -match 'docker\.sock') {
