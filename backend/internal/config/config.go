@@ -159,7 +159,13 @@ type UpdateConfig struct {
 	// ProxyURL 用于访问 GitHub 的代理地址
 	// 支持 http/https/socks5/socks5h 协议
 	// 例如: "http://127.0.0.1:7890", "socks5://127.0.0.1:1080"
-	ProxyURL string `mapstructure:"proxy_url"`
+	ProxyURL         string `mapstructure:"proxy_url"`
+	Mode             string `mapstructure:"mode"`
+	ReleaseRepo      string `mapstructure:"release_repo"`
+	ReleaseTagPrefix string `mapstructure:"release_tag_prefix"`
+	HelperSocket     string `mapstructure:"helper_socket"`
+	HelperTokenFile  string `mapstructure:"helper_token_file"`
+	GitHubTokenFile  string `mapstructure:"github_token_file"`
 }
 
 type IdempotencyConfig struct {
@@ -2437,6 +2443,12 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("gateway.session_idle_timeout_minutes", 0)
 	viper.SetDefault("gateway.user_message_queue.mode", "")
 	viper.SetDefault("update.proxy_url", "")
+	viper.SetDefault("update.mode", "binary")
+	viper.SetDefault("update.release_repo", "Wei-Shaw/sub2api")
+	viper.SetDefault("update.release_tag_prefix", "v")
+	viper.SetDefault("update.helper_socket", "")
+	viper.SetDefault("update.helper_token_file", "")
+	viper.SetDefault("update.github_token_file", "")
 
 	// sticky_escape_enabled is the one exception to the zero-value rule: its
 	// effective default is true, applied post-unmarshal via a viper.IsSet guard.

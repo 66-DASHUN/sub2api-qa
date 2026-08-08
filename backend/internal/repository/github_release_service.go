@@ -32,6 +32,21 @@ type githubReleaseClientError struct {
 //   - false（默认）：返回错误占位客户端，禁止回退到直连
 //   - true：回退到直连（仅限管理员显式开启）
 func NewGitHubReleaseClient(proxyURL string, allowDirectOnProxyError bool) service.GitHubReleaseClient {
+	return newGitHubReleaseClient(proxyURL, allowDirectOnProxyError, strings.TrimSpace(os.Getenv("UPDATE_GITHUB_TOKEN")))
+}
+
+func NewGitHubReleaseClientWithTokenFile(proxyURL string, allowDirectOnProxyError bool, tokenFile string) service.GitHubReleaseClient {
+	if strings.TrimSpace(tokenFile) == "" {
+		return NewGitHubReleaseClient(proxyURL, allowDirectOnProxyError)
+	}
+	token, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return &githubReleaseClientError{err: fmt.Errorf("read update GitHub token file: %w", err)}
+	}
+	return newGitHubReleaseClient(proxyURL, allowDirectOnProxyError, strings.TrimSpace(string(token)))
+}
+
+func newGitHubReleaseClient(proxyURL string, allowDirectOnProxyError bool, token string) service.GitHubReleaseClient {
 	// 安全说明：httpclient.GetClient 的错误链（url.Parse / proxyutil）不含明文代理凭据，
 	// 但仍通过 slog 仅在服务端日志记录，不会暴露给 HTTP 响应。
 	sharedClient, err := httpclient.GetClient(httpclient.Options{
@@ -65,7 +80,7 @@ func NewGitHubReleaseClient(proxyURL string, allowDirectOnProxyError bool) servi
 	return &githubReleaseClient{
 		httpClient:         apiClient,
 		downloadHTTPClient: downloadClient,
-		updateGitHubToken:  os.Getenv("UPDATE_GITHUB_TOKEN"),
+		updateGitHubToken:  token,
 	}
 }
 

@@ -86,10 +86,13 @@ type UpdateInfo struct {
 	Cached         bool         `json:"cached"`
 	Warning        string       `json:"warning,omitempty"`
 	BuildType      string       `json:"build_type"` // "source" or "release"
+	UpdateMode     string       `json:"update_mode"`
+	UpdateSource   string       `json:"update_source,omitempty"`
 }
 
 // ReleaseInfo contains GitHub release details
 type ReleaseInfo struct {
+	TagName     string  `json:"tag_name,omitempty"`
 	Name        string  `json:"name"`
 	Body        string  `json:"body"`
 	PublishedAt string  `json:"published_at"`

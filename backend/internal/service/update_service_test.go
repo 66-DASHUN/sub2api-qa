@@ -69,6 +69,11 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoUpdateAvailable)
 }
 
+func TestUpdateInfoHasContainerMode(t *testing.T) {
+	info := &UpdateInfo{UpdateMode: "container"}
+	require.Equal(t, "container", info.UpdateMode)
+}
+
 func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateService {
 	return NewUpdateService(
 		&updateServiceCacheStub{},

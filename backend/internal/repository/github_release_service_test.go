@@ -79,6 +79,16 @@ func TestGitHubReleaseClientAPIRequestAuthorization(t *testing.T) {
 	require.Empty(t, req.Header.Get("Authorization"))
 }
 
+func TestGitHubReleaseClientReadsTokenFromFile(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "github-token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("file-token\n"), 0600))
+
+	client := NewGitHubReleaseClientWithTokenFile("", false, tokenFile).(*githubReleaseClient)
+	req, err := client.newAPIRequest(context.Background(), "https://api.github.com/repos/a/b/releases/latest")
+	require.NoError(t, err)
+	require.Equal(t, "Bearer file-token", req.Header.Get("Authorization"))
+}
+
 func TestGitHubReleaseClientRedirectAuthorization(t *testing.T) {
 	tests := []struct {
 		name     string
