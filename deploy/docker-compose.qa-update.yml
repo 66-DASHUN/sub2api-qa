@@ -1,5 +1,6 @@
 services:
   sub2api:
+    image: ghcr.io/66-dashun/sub2api:${SUB2API_VERSION:-0.1.171}
     volumes:
       - type: bind
         source: ${IMAGE_UPDATER_SOCKET_DIR:-/run/sub2api-image-updater}
