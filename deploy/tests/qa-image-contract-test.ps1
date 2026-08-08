@@ -62,6 +62,7 @@ Require-Match $workflow 'actual_revision' 'Existing images are not bound to the 
 Require-Match $workflow 'image_exists=true' 'Interrupted image publishing cannot be resumed safely'
 Require-Match $workflow 'targetCommitish' 'Existing releases are not bound to the source commit'
 Require-Match $workflow 'gh api .*git/ref/tags' 'Private repository tag checks must use the authenticated GitHub API'
+Require-Match $workflow '(?s)Create or resume QA release metadata.*--notes .*\r?\n\s+fi\s*$' 'QA release script conditional is not closed'
 if ($workflow -match 'git ls-remote --tags origin') {
     throw 'Private repository tag checks must not depend on removed checkout credentials'
 }

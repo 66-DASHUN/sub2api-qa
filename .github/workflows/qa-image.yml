@@ -214,3 +214,4 @@ jobs:
               --title "QA ${QA_VERSION}" \
               --target "${GITHUB_SHA}" \
               --notes "QA image: ${QA_REPOSITORY}:${QA_VERSION}; source commit: ${GITHUB_SHA}"
+          fi
