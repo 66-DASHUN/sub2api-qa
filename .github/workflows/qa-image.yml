@@ -79,12 +79,25 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate immutable version state
         id: preflight
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           tag="qa-v${QA_VERSION}"
           image="${QA_REPOSITORY}:${QA_VERSION}"
-          remote_tag="$(git ls-remote --tags origin "refs/tags/${tag}" | cut -f1)"
+          set +e
+          tag_lookup="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha' 2>&1)"
+          tag_status=$?
+          set -e
+          if [ "${tag_status}" -eq 0 ]; then
+            remote_tag="${tag_lookup}"
+          elif grep -q 'HTTP 404' <<<"${tag_lookup}"; then
+            remote_tag=""
+          else
+            echo "${tag_lookup}" >&2
+            exit 1
+          fi
           if [ -n "${remote_tag}" ] && [ "${remote_tag}" != "${GITHUB_SHA}" ]; then
             echo "Release tag ${tag} belongs to ${remote_tag}, not ${GITHUB_SHA}." >&2
             exit 1
@@ -161,7 +174,18 @@ jobs:
         run: |
           set -euo pipefail
           tag="qa-v${QA_VERSION}"
-          remote_tag="$(git ls-remote --tags origin "refs/tags/${tag}" | cut -f1)"
+          set +e
+          tag_lookup="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha' 2>&1)"
+          tag_status=$?
+          set -e
+          if [ "${tag_status}" -eq 0 ]; then
+            remote_tag="${tag_lookup}"
+          elif grep -q 'HTTP 404' <<<"${tag_lookup}"; then
+            remote_tag=""
+          else
+            echo "${tag_lookup}" >&2
+            exit 1
+          fi
           if [ -n "${remote_tag}" ] && [ "${remote_tag}" != "${GITHUB_SHA}" ]; then
             echo "Release tag ${tag} belongs to ${remote_tag}, not ${GITHUB_SHA}." >&2
             exit 1

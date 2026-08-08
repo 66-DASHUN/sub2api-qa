@@ -61,6 +61,10 @@ Require-Match $workflow 'group:\s*qa-container-\$\{\{ inputs\.version' 'QA concu
 Require-Match $workflow 'actual_revision' 'Existing images are not bound to the source commit'
 Require-Match $workflow 'image_exists=true' 'Interrupted image publishing cannot be resumed safely'
 Require-Match $workflow 'targetCommitish' 'Existing releases are not bound to the source commit'
+Require-Match $workflow 'gh api .*git/ref/tags' 'Private repository tag checks must use the authenticated GitHub API'
+if ($workflow -match 'git ls-remote --tags origin') {
+    throw 'Private repository tag checks must not depend on removed checkout credentials'
+}
 if ($workflow -match '--clobber|gh release edit') {
     throw 'The QA workflow must not overwrite an existing image release'
 }
